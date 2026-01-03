@@ -15,7 +15,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private GLSurfaceView glSurfaceView;
-    private OpenGLRenderer renderer;
+    private com.example.ndklearn2.OpenGLRenderer2 renderer;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -28,7 +28,7 @@ public class MainActivity extends AppCompatActivity {
         glSurfaceView.setEGLContextClientVersion(3);
         
         // 设置渲染器
-        renderer = new OpenGLRenderer();
+        renderer = new com.example.ndklearn2.OpenGLRenderer2();
         glSurfaceView.setRenderer(renderer);
         
         // 设置为持续渲染模式（可选：RENDERMODE_WHEN_DIRTY 为按需渲染）

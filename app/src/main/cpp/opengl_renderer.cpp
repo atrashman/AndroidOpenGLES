@@ -53,6 +53,7 @@ static const char* fragmentShaderSource = R"(
 #version 300 es
 precision mediump float;
     
+    uniform float uBrightness;
     // 输入：从顶点着色器传来的数据（会被插值）
     in vec4 vColor;  // 从顶点着色器传来的颜色
     
@@ -62,8 +63,8 @@ precision mediump float;
     void main() {
         // 设置像素颜色
         // 你可以在这里修改颜色来学习 GLSL！
-        // 例如：fragColor = vec4(1.0, 0.0, 0.0, 1.0); // 纯红色
-        fragColor = vColor;
+        // 例如: fragColor = vec4(1.0, 0.0, 0.0, 1.0); // 纯红色
+        fragColor = vColor * uBrightness;
     }
 )";
 
@@ -158,6 +159,12 @@ static GLuint gProgram = 0;
 static GLuint gVAO = 0;
 static GLuint gVBO = 0;
 static float gRotationAngle = 0.0f;
+
+//uniform
+static GLint gUniformBrightnessLoc = -1;
+
+//local static
+static float gBrightness = 1.0f;
 
 // ============================================================
 // 【关键函数】初始化 OpenGL 和编译 GLSL 着色器
@@ -386,6 +393,14 @@ Java_com_example_ndklearn2_OpenGLRenderer_nativeInit(JNIEnv* env, jobject thiz) 
     // 现在：不再绑定任何 VAO
     // 注意：VAO 中已经保存了所有配置，解绑不影响已保存的配置
     
+
+    //setup uniform
+    gUniformBrightnessLoc = glGetUniformLocation(gProgram, "uBrightness");
+    if (gUniformBrightnessLoc == -1) {
+        LOGE("Failed to get uniform location for uBrightness");
+        return JNI_FALSE;
+    }
+
     LOGI("OpenGL initialization successful");
     return JNI_TRUE;
 }
@@ -419,13 +434,21 @@ Java_com_example_ndklearn2_OpenGLRenderer_nativeRender(JNIEnv* env, jobject thiz
     // 这会让 GPU 使用我们编译好的 GLSL 着色器代码！
     // 之后所有的绘制操作都会使用这个着色器程序
     glUseProgram(gProgram);
-    
+    //getuniform
+    if (gUniformBrightnessLoc != -1) {
+        float brightness = sin(gRotationAngle) * 0.5f + 0.5f;
+        glUniform1f(gUniformBrightnessLoc, brightness);
+        gRotationAngle += 0.01f;
+    }
+
+
     // 更新旋转角度（可选：创建旋转效果）
     gRotationAngle += 0.01f;
     const float TWO_PI = 2.0f * 3.14159265358979323846f;
     if (gRotationAngle > TWO_PI) {
         gRotationAngle -= TWO_PI;
     }
+    
     
     // 【关键步骤】绘制三角形
     // 当调用 glDrawArrays() 时：

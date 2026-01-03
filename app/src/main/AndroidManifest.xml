@@ -15,17 +15,17 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
-
-        </activity>
-        <activity
-            android:name=".EGLTestActivity"
-            android:exported="true"
-            android:label="EGL Test">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+        <activity
+            android:name=".EGLTestActivity"
+            android:exported="true"
+            android:label="EGL Test">
+
         </activity>
     </application>
 

@@ -108,7 +108,7 @@ static bool createEGLContext(EGLConfig config) {
     };
     
     // eglCreateContext(display, config, share_context, attribs)
-    // 参数3: 共享上下文（nullptr 表示不共享）
+    // 参数3share_context: 共享上下文（nullptr 表示不共享） 着色器 纹理贴图等可以共享
     // 参数4: 上下文属性数组
     gContext = eglCreateContext(gDisplay, config, nullptr, contextAttribs);
     if (gContext == EGL_NO_CONTEXT) {
