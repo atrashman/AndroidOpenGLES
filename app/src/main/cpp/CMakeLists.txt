@@ -39,4 +39,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         android
         log
         GLESv3
-        EGL)
+        EGL
+        jnigraphics)

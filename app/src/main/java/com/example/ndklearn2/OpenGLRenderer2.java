@@ -1,9 +1,11 @@
 package com.example.ndklearn2;
 
+import android.content.Context;
 import android.opengl.GLSurfaceView;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
-
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 /**
  * OpenGL ES 渲染器
  *
@@ -25,6 +27,11 @@ import javax.microedition.khronos.opengles.GL10;
  * - 渲染时 GPU 执行 GLSL 代码，决定最终显示效果
  */
 public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
+
+    private Context mContext;
+    public OpenGLRenderer2(Context context){
+        mContext= context;
+    }
 
     static {
         System.loadLibrary("ndklearn2");
@@ -66,8 +73,27 @@ public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         // 调用 C++ 函数，编译 GLSL 着色器
         nativeInit();
+        loadTexture(R.drawable.texture);
+        loadUniform();
+        loadVertice();
     }
 
+    private native void loadUniform();
+
+
+    private native void loadVertice();
+
+    public void loadTexture(int resourceID){
+        // 1. 从资源中解码 Bitmap (设置为不缩放，确保原始大小)
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inScaled = false;
+        Bitmap bitmap = BitmapFactory.decodeResource(mContext.getResources(), resourceID, options);
+        // 2. 绑定这个 Bitmap 到 OpenGL (假设你已经绑定了 texture ID)
+        loadTextureFromBitmap(bitmap);
+        // 3. 及时回收 Bitmap (可选，但这还是由 Java GC 管理)
+        bitmap.recycle();
+    }
+    public native void loadTextureFromBitmap(Bitmap bitmap);
     /**
      * 【步骤 2】表面大小改变时调用
      * 时机：GLSurfaceView 大小改变时（如旋转屏幕）

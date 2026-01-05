@@ -28,7 +28,7 @@ public class MainActivity extends AppCompatActivity {
         glSurfaceView.setEGLContextClientVersion(3);
         
         // 设置渲染器
-        renderer = new com.example.ndklearn2.OpenGLRenderer2();
+        renderer = new com.example.ndklearn2.OpenGLRenderer2(this);
         glSurfaceView.setRenderer(renderer);
         
         // 设置为持续渲染模式（可选：RENDERMODE_WHEN_DIRTY 为按需渲染）
