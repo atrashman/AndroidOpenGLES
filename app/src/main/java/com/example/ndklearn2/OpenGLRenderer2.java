@@ -6,6 +6,7 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.opengl.Matrix;
 /**
  * OpenGL ES 渲染器
  *
@@ -29,8 +30,76 @@ import android.graphics.BitmapFactory;
 public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
 
     private Context mContext;
+    
+    // 变换矩阵
+    private float[] modelMatrix = new float[16];
+    private float[] viewMatrix = new float[16];
+    private float[] projectionMatrix = new float[16];
+    private float[] normalMatrix = new float[9];
+    
+    // 相机位置
+    private float[] cameraPos = new float[3];
+    
+    // 光照参数
+    private float[] ambientColor = new float[]{0.2f, 0.2f, 0.2f};
+    private float[] diffuseColor = new float[]{1.0f, 1.0f, 1.0f};
+    private float[] specularColor = new float[]{1.0f, 1.0f, 1.0f};
+    private float[] lightDirection = new float[]{0.0f, 0.0f, 0.0f}; // 0,0,0表示点光源
+    private float[] lightPos = new float[]{2.0f, 2.0f, 2.0f};
+    private float[] attenuationFactors = new float[]{1.0f, 0.09f, 0.032f};
+    private float spotExponent = 0.0f;
+    private float spotCutoffAngle = 0.0f;
+    private float[] spotDirection = new float[]{0.0f, 0.0f, 0.0f};
+    private int computeDistanceAttenuation = 1;
+    
+    // 材质参数
+    private float[] materialAmbient = new float[]{0.2f, 0.2f, 0.2f};
+    private float[] materialDiffuse = new float[]{0.8f, 0.8f, 0.8f};
+    private float[] materialSpecular = new float[]{1.0f, 1.0f, 1.0f};
+    private float materialShininess = 32.0f;
+    
     public OpenGLRenderer2(Context context){
         mContext= context;
+        initMatrices();
+    }
+    
+    private void initMatrices() {
+        // 模型矩阵：单位矩阵（不进行变换）世界坐标即物体坐标
+        Matrix.setIdentityM(modelMatrix, 0);
+        
+        // 相机位置：在 (2.5, 2.5, 2.5) 位置，看向原点，可以看到三个面（正X、正Y、正Z）
+        // 保持合适的距离，既能看清三个面，又不会太远
+        cameraPos[0] = 2.5f;
+        cameraPos[1] = 2.5f;
+        cameraPos[2] = 2.5f;
+        
+        // 视图矩阵：从相机位置看向原点，上方向为Y轴正方向
+        float eyeX = cameraPos[0];
+        float eyeY = cameraPos[1];
+        float eyeZ = cameraPos[2];
+        float centerX = 0.0f;
+        float centerY = 0.0f;
+        float centerZ = 0.0f;
+        float upX = 0.0f;
+        float upY = 1.0f;
+        float upZ = 0.0f;
+        //上方向 (0, 1, 0)
+        Matrix.setLookAtM(viewMatrix, 0, eyeX, eyeY, eyeZ, centerX, centerY, centerZ, upX, upY, upZ);
+        
+        // 投影矩阵：透视投影（在onSurfaceChanged中会根据屏幕尺寸更新）
+        // 使用 FOV（视场角）方式，更直观
+        // FOV 越小，物体显示越大（类似长焦镜头）
+        float fovy = 45.0f;  // 垂直视场角（度），值越小物体越大
+        float aspect = 1.0f; // 宽高比（在onSurfaceChanged中会更新）
+        float near = 1.0f;   // 近裁剪平面距离
+        float far = 100.0f;  // 远裁剪平面距离
+        Matrix.perspectiveM(projectionMatrix, 0, fovy, aspect, near, far);
+        
+        // 法线矩阵：从模型矩阵提取3x3部分并求逆转置
+        // 这里简化处理，使用单位矩阵
+        normalMatrix[0] = 1.0f; normalMatrix[1] = 0.0f; normalMatrix[2] = 0.0f;
+        normalMatrix[3] = 0.0f; normalMatrix[4] = 1.0f; normalMatrix[5] = 0.0f;
+        normalMatrix[6] = 0.0f; normalMatrix[7] = 0.0f; normalMatrix[8] = 1.0f;
     }
 
     static {
@@ -76,7 +145,22 @@ public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
         loadTexture(R.drawable.texture);
         loadUniform();
         loadVertice();
+
+        
+
+
+        updateTransformUBO(modelMatrix, viewMatrix, projectionMatrix, normalMatrix);
+        updateLightUBO(ambientColor, diffuseColor, specularColor, lightDirection, lightPos, attenuationFactors, spotExponent, spotCutoffAngle, spotDirection, computeDistanceAttenuation);
+        updateMaterialUBO(materialAmbient, materialDiffuse, materialSpecular, materialShininess);
+        updateCameraPos(cameraPos);
     }
+
+    
+    private native void updateTransformUBO(float[] modelMatrix, float[] viewMatrix, float[] projectionMatrix, float[] normalMatrix);
+    private native void updateLightUBO(float[] ambientColor, float[] diffuseColor, float[] specularColor, float[] lightDirection, float[] lightPos, float[] attenuationFactors, float spotExponent, float spotCutoffAngle, float[] spotDirection, int computeDistanceAttenuation);
+    private native void updateMaterialUBO(float[] materialAmbient, float[] materialDiffuse, float[] materialSpecular, float materialShininess);
+    private native void updateCameraPos(float[] cameraPos);
+
 
     private native void loadUniform();
 
@@ -101,6 +185,17 @@ public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
         nativeResize(width, height);
+        
+        // 更新投影矩阵以适应新的屏幕尺寸
+        // 使用 FOV（视场角）方式，更直观
+        float fovy = 45.0f;  // 垂直视场角（度），值越小物体越大
+        float aspect = (float) width / height;  // 宽高比
+        float near = 1.0f;   // 近裁剪平面距离
+        float far = 100.0f;  // 远裁剪平面距离
+        Matrix.perspectiveM(projectionMatrix, 0, fovy, aspect, near, far);
+        
+        // 更新变换矩阵UBO
+        updateTransformUBO(modelMatrix, viewMatrix, projectionMatrix, normalMatrix);
     }
 
     /**

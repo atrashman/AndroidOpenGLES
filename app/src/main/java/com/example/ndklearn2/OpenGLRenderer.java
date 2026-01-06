@@ -74,7 +74,6 @@ public class OpenGLRenderer implements GLSurfaceView.Renderer {
      */
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
-//        gl.glViewport(0, 0, width, height);
         nativeResize(width, height);
     }
     

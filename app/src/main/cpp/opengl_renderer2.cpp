@@ -12,7 +12,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-static void compileShader(GLenum type, const char* source);
+static GLuint compileShader(GLenum type, const char* source);
 static GLuint createProgram();
 
 static GLuint gProgram = 0;
@@ -98,7 +98,10 @@ layout(std140) uniform MaterialBlock {
 // 相机位置（单独uniform，因为可能频繁变化）
 uniform vec3 uCameraPos;
 
-in vec3 vWorldPos;                // 世界空间位置
+// 纹理采样器
+uniform sampler2D uTexture;
+
+in vec3 worldPos;                // 世界空间位置
 in vec3 vWorldSpaceNormal;         // 世界空间法线
 in vec2 vTexCoord;                 // 纹理坐标
 
@@ -116,8 +119,8 @@ void main() {
     if (uLightDirection.x == 0.0 && uLightDirection.y == 0.0 && uLightDirection.z == 0.0) {
         //点光源情况
         //计算点光源到当前fragment的位置
-        //Vec3 fragCenter = vWorldPos+0.5; 错误 因为是在三维中的
-        vec3 lightDir = uLightPos - vWorldPos;
+        //Vec3 fragCenter = worldPos+0.5; 错误 因为是在三维中的
+        vec3 lightDir = uLightPos - worldPos;
         distance = length(lightDir);
         L = normalize(lightDir);
 
@@ -166,7 +169,7 @@ void main() {
     vec3 specular = vec3(0.0);
     if (NdotL > 0.0) {
         // 计算视线方向
-        vec3 V = normalize(uCameraPos - vWorldPos);
+        vec3 V = normalize(uCameraPos - worldPos);
 
         // 计算反射方向
         vec3 R = reflect(-L, N);
@@ -176,8 +179,11 @@ void main() {
         specular = uSpecularColor * uMaterialSpecular * pow(RdotV, uMaterialShininess);
     }
 
-    // 4. 最终颜色
-    vec3 finalColor = ambient + (diffuse + specular) * attenuation;
+    // 4. 采样纹理颜色
+    vec4 textureColor = texture(uTexture, vTexCoord);
+    
+    // 5. 将光照颜色与纹理颜色结合（纹理颜色作为基础，光照作为调制）
+    vec3 finalColor = textureColor.rgb * (ambient + (diffuse + specular) * attenuation);
 
     fragColor = vec4(finalColor, 1.0);
 
@@ -212,8 +218,8 @@ Java_com_example_ndklearn2_OpenGLRenderer2_loadTextureFromBitmap(JNIEnv *env, jo
         return;
     }
 
-    // 仅处理ARGB_8888格式（其他格式需额外适配）
-    if (info.format != ANDROID_BITMAP_FORMAT_ARGB_8888) {
+    // 仅处理RGBA_8888格式（其他格式需额外适配）
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
         return;
     }
 
@@ -228,25 +234,16 @@ Java_com_example_ndklearn2_OpenGLRenderer2_loadTextureFromBitmap(JNIEnv *env, jo
     }
     glBindTexture(GL_TEXTURE_2D, g_textureID); // 绑定到当前纹理单元
 
-    // 4. 转换ARGB→RGBA并上传（核心修复2）
+    // 4. 处理像素数据并上传
     int width = info.width;
     int height = info.height;
     uint8_t *srcPixels = static_cast<uint8_t*>(pixels);
-    uint8_t *rgbaPixels = new uint8_t[width * height * 4]; // 临时存储RGBA数据
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int srcIdx = (y * width + x) * 4;
-            int dstIdx = (y * width + x) * 4;
-            // ARGB → RGBA 字节交换
-            rgbaPixels[dstIdx + 0] = srcPixels[srcIdx + 1]; // R
-            rgbaPixels[dstIdx + 1] = srcPixels[srcIdx + 2]; // G
-            rgbaPixels[dstIdx + 2] = srcPixels[srcIdx + 3]; // B
-            rgbaPixels[dstIdx + 3] = srcPixels[srcIdx + 0]; // A
-        }
-    }
-
-    // 上传转换后的RGBA数据到OpenGL
+    
+    // Android Bitmap RGBA_8888格式在内存中通常是RGBA顺序，但需要验证
+    // 为了兼容性，我们直接使用像素数据（如果格式正确）
+    // 如果遇到颜色问题，可能需要根据实际格式调整
+    
+    // 上传像素数据到OpenGL
     glTexImage2D(
             GL_TEXTURE_2D,        // 2D纹理
             0,                    // 基础mip层级
@@ -256,11 +253,8 @@ Java_com_example_ndklearn2_OpenGLRenderer2_loadTextureFromBitmap(JNIEnv *env, jo
             0,                    // 无边框
             GL_RGBA,              // 输入数据格式
             GL_UNSIGNED_BYTE,     // 数据类型
-            rgbaPixels            // 转换后的RGBA像素
+            srcPixels             // 像素数据
     );
-
-    // 释放临时内存
-    delete[] rgbaPixels;
 
     // 5. 解锁Bitmap像素
     AndroidBitmap_unlockPixels(env, bitmap);
@@ -277,23 +271,64 @@ Java_com_example_ndklearn2_OpenGLRenderer2_loadTextureFromBitmap(JNIEnv *env, jo
 }
 extern "C"
 JNIEXPORT void JNICALL
-        Java_com_example_ndklearn2_OpenGLRenderer2_releaseTexture(JNIEnv *env, jobject thiz) {
-if (g_textureID != 0) {
-glDeleteTextures(1, &g_textureID);
-g_textureID = 0;
-}
+Java_com_example_ndklearn2_OpenGLRenderer2_releaseTexture(JNIEnv *env, jobject thiz) {
+    if (g_textureID != 0) {
+    glDeleteTextures(1, &g_textureID);
+    g_textureID = 0;
+    }
 }
 
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer2_nativeResize(JNIEnv *env, jobject thiz, jint width,
                                                         jint height) {
-    // TODO: implement nativeResize()
+    LOGI("Resizing viewport to %d x %d", width, height);
+    glViewport(0, 0, width, height);
 }
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer2_nativeRender(JNIEnv *env, jobject thiz) {
-    // TODO: implement nativeRender()
+    // 清除颜色缓冲区和深度缓冲区
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // 启用深度测试（用于3D渲染）
+    glEnable(GL_DEPTH_TEST);
+    
+    // 激活着色器程序
+    if (gLightingProgram == 0) {
+        LOGE("Shader program not initialized");
+        return;
+    }
+    glUseProgram(gLightingProgram);
+    
+    // 绑定纹理到纹理单元0
+    if (g_textureID != 0) {
+        glActiveTexture(GL_TEXTURE0);  // 激活纹理单元0
+        glBindTexture(GL_TEXTURE_2D, g_textureID);
+        // 设置纹理采样器uniform（绑定到纹理单元0）
+        GLint textureLoc = glGetUniformLocation(gLightingProgram, "uTexture");
+        if (textureLoc != -1) {
+            glUniform1i(textureLoc, 0);  // 0 对应 GL_TEXTURE0
+        }
+    }
+    
+    // 绑定VAO（包含所有顶点属性配置和EBO）
+    if (gVAO == 0) {
+        LOGE("VAO not initialized");
+        return;
+    }
+    glBindVertexArray(gVAO);
+    
+    // 使用索引绘制（EBO）
+    // 正方体有6个面，每个面2个三角形，共36个索引（6面 * 2三角形 * 3顶点）
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    
+    // 解绑VAO
+    glBindVertexArray(0);
+    
+    // 解绑着色器程序
+    glUseProgram(0);
 }
 extern "C"
 JNIEXPORT void JNICALL
@@ -576,9 +611,13 @@ Java_com_example_ndklearn2_OpenGLRenderer2_loadUniform(JNIEnv *env, jobject thiz
 
     // 分配并绑定缓冲区
     if (gUBOTransform != 0 && transformBlockSize > 0) {
+        //指明操纵这个UBO
         glBindBuffer(GL_UNIFORM_BUFFER, gUBOTransform);
+        //分配内存
         glBufferData(GL_UNIFORM_BUFFER, transformBlockSize, nullptr, GL_DYNAMIC_DRAW);
+        //绑定到绑定点
         glBindBufferBase(GL_UNIFORM_BUFFER, UBO_BINDING_TRANSFORM, gUBOTransform);
+        //解绑
         glBindBuffer(GL_UNIFORM_BUFFER, 0);
     }
 
