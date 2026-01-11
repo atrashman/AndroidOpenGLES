@@ -96,10 +96,8 @@ public class OpenGLRenderer2 implements GLSurfaceView.Renderer {
         Matrix.perspectiveM(projectionMatrix, 0, fovy, aspect, near, far);
         
         // 法线矩阵：从模型矩阵提取3x3部分并求逆转置
-        // 这里简化处理，使用单位矩阵
-        normalMatrix[0] = 1.0f; normalMatrix[1] = 0.0f; normalMatrix[2] = 0.0f;
-        normalMatrix[3] = 0.0f; normalMatrix[4] = 1.0f; normalMatrix[5] = 0.0f;
-        normalMatrix[6] = 0.0f; normalMatrix[7] = 0.0f; normalMatrix[8] = 1.0f;
+        Matrix.invertM(normalMatrix, 0, modelMatrix, 0);
+        Matrix.transposeM(normalMatrix, 0, normalMatrix, 0);
     }
 
     static {

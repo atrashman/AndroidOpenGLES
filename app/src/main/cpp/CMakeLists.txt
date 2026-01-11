@@ -29,6 +29,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         native-lib.cpp
         opengl_renderer.cpp
         opengl_renderer2.cpp
+        opengl_renderer3.cpp
+        opengl_utils.cpp
         egl_direct_usage_example.cpp)
 
 # Specifies libraries CMake should link to your target library. You
