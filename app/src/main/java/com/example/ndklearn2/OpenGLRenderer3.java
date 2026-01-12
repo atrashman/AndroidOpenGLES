@@ -28,11 +28,12 @@ public class OpenGLRenderer3 implements GLSurfaceView.Renderer {
     private native void nativeResize(int width, int height);
     private native void nativeRender();
     private native void nativeCleanup();
-    
+
     private native void loadTextureFromBitmap(Bitmap bitmap);
     private native void releaseTexture();
     private native void initTFBBuffer();
     private native void initVAO();
+    private native void initUBO() ;
 
     /**
      * OpenGL 上下文创建时调用
@@ -40,13 +41,16 @@ public class OpenGLRenderer3 implements GLSurfaceView.Renderer {
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         nativeInit();
-        // 3. 初始化TFB缓冲区（存储粒子属性）
+        // 初始化TFB缓冲区（存储粒子属性）用于代替VBO
         initTFBBuffer();
 
-        // 4. 初始化VAO（绑定顶点属性）
+        // 初始化VAO（绑定顶点属性）
         initVAO();
 
-        // 5. 记录初始时间
+        // 初始化UBO
+        initUBO();
+
+        // 记录初始时间
         lastTime = System.currentTimeMillis();
     }
 

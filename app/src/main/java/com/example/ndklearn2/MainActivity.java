@@ -14,8 +14,6 @@ public class MainActivity extends AppCompatActivity {
         System.loadLibrary("ndklearn2");
     }
 
-    public static OpenGLRenderer3.Draw_what draw_what = OpenGLRenderer3.Draw_what.CUBE_LIGHT;
-
     private GLSurfaceView glSurfaceView;
     private OpenGLRenderer2 renderer;
 
