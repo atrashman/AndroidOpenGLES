@@ -34,6 +34,7 @@ static struct {
     float spoutPos[3];
     float gravity[3];
     float deltaTime;
+    float maxLifeTime;
 } g_Particle_Uniforms;
 
 static const int BINDING_POINT_TFB =0;
@@ -51,7 +52,7 @@ void updateParticlesWithTFB() {
     //禁用光栅化（只更新粒子，不渲染，节省性能）
     glEnable(GL_RASTERIZER_DISCARD);
 
-    //绑定TFB缓冲区到绑定点
+    //绑定TFB缓冲区到绑定点BINDING_POINT_TFB
     glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, BINDING_POINT_TFB, gRenderer.g_tfb);
 
     //开启TFB捕获模式（图元类型为点）
@@ -88,6 +89,7 @@ layout(std140) uniform ParticleUniforms {
         float uDeltaTime; //客观时间
         vec3 uSpoutPos;   // 喷口位置
         vec3 uGravity;  // 重力加速度向量 (0, -9.8, 0) 或类似值
+        float uMaxLifeTime;  // 最大生命周期
     };
 
 // 随机函数（GPU生成随机数，基于粒子位置）
@@ -116,23 +118,23 @@ void main() {
 
     if (currentLife <= 0.0f) {
         //生命周期结束，重置粒子
-        currentPos = spoutPos;
-        currentDiameter = random(currentPos.xy) * 1.0f + 1.0f;
+        currentPos = uSpoutPos;
+        currentDiameter = random(currentPos.xy) * 0.5f + 0.5f;  // 直径 0.5-1.0
         // 给粒子一个向上的初始速度，加上一些随机性
         vec2 randXY = vec2(random(currentPos.xy), random(currentPos.yx));
         currentVel = vec3(
-            (randXY.x - 0.5f) * 1.0f,  // X方向随机速度
-            random(currentPos.xy) * 3.0f + 2.0f,  // Y方向向上速度（主要方向）
-            (randXY.y - 0.5f) * 1.0f   // Z方向随机速度
+            (randXY.x - 0.5f) * 0.3f,  // X方向随机速度，减小
+            random(currentPos.xy) * 0.8f + 0.5f,  // Y方向向上速度 0.5-1.3
+            (randXY.y - 0.5f) * 0.3f   // Z方向随机速度，减小
         );
         currentLife = random(currentPos.xy) * 2.0f + 3.0f;  // 生命周期 3-5秒
     } else {
         // 应用重力（抛物线运动）
-        currentVel = currentVel + gravity * uDeltaTime;
+        currentVel = currentVel + uGravity * uDeltaTime;
         // 更新位置
         currentPos = currentPos + currentVel * uDeltaTime;
     }
-    vAlpha = currentLife / aLifetime; // 透明度，随着生命周期衰减
+    vAlpha = clamp(currentLife / uMaxLifeTime, 0.0f, 1.0f); // 透明度，随着生命周期衰减
     vPosition = currentPos;
     vDiameter = currentDiameter;
     vVelocity = currentVel;
@@ -141,7 +143,7 @@ void main() {
 
     // 设置顶点位置（用于渲染）
     gl_Position = vec4(currentPos.x / uAspectRatio, currentPos.y, currentPos.z, 1.0);
-    gl_PointSize = vDiameter;
+    gl_PointSize = vDiameter * 50.0;  // 放大粒子，使其可见
 }
 )";
 
@@ -190,14 +192,15 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeInit(JNIEnv* env, jobject thiz)
 
     g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
     g_Particle_Uniforms.deltaTime = 0.0f;
-    float spoutPosTemp[] = {0.0f, 0.0f, 0.0f};
-    float gravityTemp[] = {0.0f, -9.8f, 0.0f};
+    float spoutPosTemp[] = {0.0f, -0.8f, 0.0f};  // 屏幕下方
+    float gravityTemp[] = {0.0f, -0.5f, 0.0f};   // 降低重力，粒子飞得更高更慢
     memcpy(g_Particle_Uniforms.spoutPos, spoutPosTemp, sizeof(spoutPosTemp));
     memcpy(g_Particle_Uniforms.gravity, gravityTemp, sizeof(gravityTemp));
-    
+    g_Particle_Uniforms.maxLifeTime = MAX_LIFE_TIME;
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.spoutPos, 16, sizeof(g_Particle_Uniforms.spoutPos));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.gravity, 32, sizeof(g_Particle_Uniforms.gravity));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.maxLifeTime, 44, sizeof(g_Particle_Uniforms.maxLifeTime));
     return JNI_TRUE;
 }
 
@@ -229,6 +232,8 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeResize(JNIEnv *env, jobject thi
     updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.aspectRatio, 0, sizeof(g_Camera_Uniforms.aspectRatio));
 }
 
+static int frameCount = 0;
+
 // 渲染一帧
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thiz) {
@@ -236,9 +241,21 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
         LOGE("Renderer not initialized");
         return;
     }
+    
+    if (gRenderer.mesh.vao == 0 || gRenderer.g_tfb == 0) {
+        LOGE("VAO or TFB not initialized: vao=%d, tfb=%d", gRenderer.mesh.vao, gRenderer.g_tfb);
+        return;
+    }
+    
+    frameCount++;
+    if (frameCount % 60 == 0) {  // 每60帧打印一次
+        LOGI("Rendering frame %d", frameCount);
+    }
 
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
 
     glUseProgram(gRenderer.program);
@@ -252,9 +269,15 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
     if (last_time == 0.0f){
         deltaTime = 0.0f;
     } else {
-        deltaTime = (currentTime - last_time)/1000.0f;
+        deltaTime = currentTime - last_time;
     }
     last_time = currentTime;
+    g_Particle_Uniforms.deltaTime = deltaTime;
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
+    
+    if (frameCount == 1) {
+        LOGI("First frame: deltaTime=%.3f, particle_count=%d", deltaTime, gRenderer.particle_count);
+    }
 
 
     // 绑定纹理
@@ -267,14 +290,27 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
         }
     }
 
+
     // 绑定并绘制网格
     if (gRenderer.mesh.vao != 0) {
         glBindVertexArray(gRenderer.mesh.vao);
         if (gRenderer.mesh.indexCount > 0) {
             glDrawElements(GL_TRIANGLES, gRenderer.mesh.indexCount, GL_UNSIGNED_INT, 0);
         } else if (gRenderer.g_tfb != 0){
+            //两次 glDrawArrays 看似重复，实则目的完全不同：
+            //第一次是 "更新粒子数据"（只跑顶点着色器，不渲染），
+            //第二次是 "渲染粒子"（跑完整管线，显示到屏幕）。
+            if (frameCount == 1) {
+                LOGI("Drawing particles for first time");
+            }
             updateParticlesWithTFB();
             renderParticles();
+            
+            // 检查 OpenGL 错误
+            GLenum err = glGetError();
+            if (err != GL_NO_ERROR && frameCount <= 5) {
+                LOGE("OpenGL error after drawing: 0x%x", err);
+            }
         }
         glBindVertexArray(0);
     }
@@ -301,17 +337,41 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeCleanup(JNIEnv *env, jobject th
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject thiz) {
-    // TODO: implement initTFBBuffer()
+    LOGI("Initializing TFB buffer with %d particles", gRenderer.particle_count);
+    
     //create
     glGenBuffers(1, &gRenderer.g_tfb);
     glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, gRenderer.g_tfb);
 
     //分配大小
     int buffer_size = gRenderer.particle_count * sizeof(Particle);
-    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, buffer_size, nullptr, GL_DYNAMIC_COPY);
 
+    // 创建并初始化粒子数据
+    Particle* particles = new Particle[gRenderer.particle_count];
+    for (int i = 0; i < gRenderer.particle_count; i++) {
+        // 初始位置设为喷出点（或任意位置，因为第一帧会重置）
+        particles[i].position[0] = 0.0f;
+        particles[i].position[1] = 0.0f;
+        particles[i].position[2] = 0.0f;
+        
+        // 初始直径（会在重置时随机）
+        particles[i].diameter = 1.0f;
+        
+        // 初始速度为0
+        particles[i].velocity[0] = 0.0f;
+        particles[i].velocity[1] = 0.0f;
+        particles[i].velocity[2] = 0.0f;
+        
+        // 生命周期设为负数或0，触发第一帧重置
+        // 为了让粒子不同时重置，可以设置不同的初始生命周期
+        particles[i].lifeTime = -((float)i / (float)gRenderer.particle_count) * 3.0f;
+    }
+
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, buffer_size, particles, GL_DYNAMIC_COPY);
+    delete[] particles;  // 释放临时数组
+    
     //指定TFB要捕获的变量
-    glTransformFeedbackVaryings(gRenderer.program, sizeof(g_TransformFeedbackVaryings), g_TransformFeedbackVaryings, GL_INTERLEAVED_ATTRIBS);
+    glTransformFeedbackVaryings(gRenderer.program, 4, g_TransformFeedbackVaryings, GL_INTERLEAVED_ATTRIBS);
 
     // 重新链接着色器程序（使TFB变量设置生效）
     glLinkProgram(gRenderer.program);
@@ -323,6 +383,9 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject th
         //抛出错误
         GLchar info[512];
         glGetProgramInfoLog(gRenderer.program, 512, nullptr, info);
+        LOGE("Program link failed after TFB setup: %s", info);
+    } else {
+        LOGI("TFB buffer initialized successfully");
     }
     //解绑
     glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
@@ -331,7 +394,8 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject th
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initVAO(JNIEnv *env, jobject thiz) {
-    // TODO: implement initVAO()
+    LOGI("Initializing VAO");
+    
     glGenVertexArrays(1, &gRenderer.mesh.vao);
     glBindVertexArray(gRenderer.mesh.vao);
     //绑定TFB缓冲区作为顶点缓冲区（因为粒子数据存在这里）
@@ -349,10 +413,35 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initVAO(JNIEnv *env, jobject thiz) {
     //解绑VAO和vbo
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+    
+    LOGI("VAO initialized successfully");
 }
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initUBO(JNIEnv *env, jobject thiz) {
-    // TODO: implement initUBO()
-
+    LOGI("Initializing UBO (re-bind after program relink)");
+    
+    // 重新链接程序后，需要重新创建和绑定UBO
+    // 释放旧的 UBO
+    if (g_Camera_Uniforms.ubo.ubo != 0) {
+        releaseUniformBuffer(&g_Camera_Uniforms.ubo);
+    }
+    if (g_Particle_Uniforms.ubo.ubo != 0) {
+        releaseUniformBuffer(&g_Particle_Uniforms.ubo);
+    }
+    
+    // 重新创建 Camera UBO
+    g_Camera_Uniforms.ubo = createUniformBuffer(gRenderer.program, "CameraUniforms", 0);
+    updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.aspectRatio, 0, sizeof(g_Camera_Uniforms.aspectRatio));
+    
+    // 重新创建 Particle UBO（确保使用相同的初始值）
+    g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.spoutPos, 16, sizeof(g_Particle_Uniforms.spoutPos));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.gravity, 32, sizeof(g_Particle_Uniforms.gravity));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.maxLifeTime, 44, sizeof(g_Particle_Uniforms.maxLifeTime));
+    
+    LOGI("UBO initialized successfully - spoutPos=(%.2f,%.2f,%.2f), gravity=(%.2f,%.2f,%.2f)", 
+         g_Particle_Uniforms.spoutPos[0], g_Particle_Uniforms.spoutPos[1], g_Particle_Uniforms.spoutPos[2],
+         g_Particle_Uniforms.gravity[0], g_Particle_Uniforms.gravity[1], g_Particle_Uniforms.gravity[2]);
 }

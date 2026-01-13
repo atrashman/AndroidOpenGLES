@@ -16,7 +16,7 @@ public class MainActivity extends AppCompatActivity {
 
     private GLSurfaceView glSurfaceView;
     private OpenGLRenderer2 renderer;
-
+    private OpenGLRenderer3 renderer3;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -28,8 +28,9 @@ public class MainActivity extends AppCompatActivity {
         glSurfaceView.setEGLContextClientVersion(3);
         
         // 设置渲染器
-        renderer = new OpenGLRenderer2( this);
-        glSurfaceView.setRenderer(renderer);
+        // renderer = new OpenGLRenderer2( this);
+        renderer3 = new OpenGLRenderer3( this);
+        glSurfaceView.setRenderer(renderer3);
         
         // 设置为持续渲染模式（可选：RENDERMODE_WHEN_DIRTY 为按需渲染）
         glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);

@@ -55,7 +55,9 @@ typedef struct {
     float velocity[3];
     float lifeTime;//粒子剩余生命周期（秒）,<=0 时重置粒子
 } Particle;
-const int GL_PROGRAM_POINT_SIZE = 0x8642;
+const float GL_PROGRAM_POINT_SIZE = 0x8642;
+
+const float MAX_LIFE_TIME = 5.0f;
 
 #ifdef __cplusplus
 }
