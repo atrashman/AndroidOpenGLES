@@ -40,7 +40,10 @@ public class OpenGLRenderer3 implements GLSurfaceView.Renderer {
      */
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        nativeInit();
+        if (!nativeInit()) {
+            android.util.Log.e("OpenGLRenderer3", "Failed to initialize renderer");
+            return;
+        }
         // 初始化TFB缓冲区（存储粒子属性）用于代替VBO
         initTFBBuffer();
 

@@ -17,7 +17,8 @@
 static struct {
     GLuint program;
     GLuint textureID;
-    GLuint g_tfb;
+    GLuint g_tfb[2];  // 双缓冲：ping-pong buffers
+    int currentBuffer; // 当前读取的缓冲区索引 (0 或 1)
     MeshData mesh;
     int particle_count;
     bool initialized;
@@ -52,29 +53,65 @@ void updateParticlesWithTFB() {
     //禁用光栅化（只更新粒子，不渲染，节省性能）
     glEnable(GL_RASTERIZER_DISCARD);
 
-    //绑定TFB缓冲区到绑定点BINDING_POINT_TFB
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, BINDING_POINT_TFB, gRenderer.g_tfb);
+    // 双缓冲 ping-pong：从 currentBuffer 读取，写入到另一个缓冲区
+    int readBuffer = gRenderer.currentBuffer;
+    int writeBuffer = 1 - gRenderer.currentBuffer;
+    
+    // 绑定读取缓冲区到 VAO（作为输入）
+    // 注意：VAO 必须已经绑定（在 nativeRender 中）
+    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[readBuffer]);
+    // 更新顶点属性指针指向读取缓冲区（这些设置会保存到当前绑定的 VAO）
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
+    glEnableVertexAttribArray(3);
+    
+    // 绑定写入缓冲区到 Transform Feedback（作为输出）
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, BINDING_POINT_TFB, gRenderer.g_tfb[writeBuffer]);
 
     //开启TFB捕获模式（图元类型为点）
     glBeginTransformFeedback(GL_POINTS);
 
-    //执行绘制
+    //执行绘制（从 readBuffer 读取，写入到 writeBuffer）
     glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
 
     //关闭TFB模式
     glEndTransformFeedback();
+    
+    // 等待 Transform Feedback 完成（确保数据写入完成）
+    glFlush();
+    
+    // 交换缓冲区：下次从 writeBuffer 读取
+    gRenderer.currentBuffer = writeBuffer;
+    
     //启用光栅化（后续渲染需要）
     glDisable(GL_RASTERIZER_DISCARD);
-
 }
- void renderParticles() {
-    // 直接绘制更新后的粒子（TFB缓冲区已存储最新属性）
+void renderParticles() {
+    // 绑定当前缓冲区（已更新的数据）到 VAO 用于渲染
+    // 注意：VAO 已经绑定（在 nativeRender 中），只需要更新 ARRAY_BUFFER 绑定
+    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[gRenderer.currentBuffer]);
+    // 重新设置顶点属性指针（因为缓冲区改变了）
+    // VAO 已经绑定，所以这些设置会更新 VAO 的状态
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
+    glEnableVertexAttribArray(3);
+    
+    // 绘制更新后的粒子（使用当前缓冲区中的数据）
     glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
 }
 
 // 顶点着色器（简化版，可根据需要修改）
-static const char* vertexShaderSource = R"(
-#version 300 es
+static const char* vertexShaderSource = R"(#version 300 es
 
 layout (location = 0) in vec3 aPosition;
 layout (location = 1) in float diameter;
@@ -116,18 +153,23 @@ void main() {
     vec3 currentVel = aVelocity;
     float currentLife = aLifetime - uDeltaTime;
 
+    // 使用 gl_VertexID 作为每个粒子的唯一标识（用于随机种子）
+    float particleID = float(gl_VertexID);
+
     if (currentLife <= 0.0f) {
         //生命周期结束，重置粒子
         currentPos = uSpoutPos;
-        currentDiameter = random(currentPos.xy) * 0.5f + 0.5f;  // 直径 0.5-1.0
+        // 使用粒子 ID 来生成不同的随机值，确保每个粒子有不同的随机值
+        vec2 seedVec = vec2(particleID * 0.1, particleID * 0.1618);  // 使用粒子 ID 作为种子
+        currentDiameter = random(seedVec) * 0.5f + 0.5f;  // 直径 0.5-1.0
         // 给粒子一个向上的初始速度，加上一些随机性
-        vec2 randXY = vec2(random(currentPos.xy), random(currentPos.yx));
+        vec2 randXY = vec2(random(seedVec), random(seedVec.yx));
         currentVel = vec3(
             (randXY.x - 0.5f) * 0.3f,  // X方向随机速度，减小
-            random(currentPos.xy) * 0.8f + 0.5f,  // Y方向向上速度 0.5-1.3
+            random(seedVec) * 0.8f + 0.5f,  // Y方向向上速度 0.5-1.3
             (randXY.y - 0.5f) * 0.3f   // Z方向随机速度，减小
         );
-        currentLife = random(currentPos.xy) * 2.0f + 3.0f;  // 生命周期 3-5秒
+        currentLife = random(seedVec) * 2.0f + 3.0f;  // 生命周期 3-5秒
     } else {
         // 应用重力（抛物线运动）
         currentVel = currentVel + uGravity * uDeltaTime;
@@ -148,8 +190,7 @@ void main() {
 )";
 
 // 片段着色器
-static const char* fragmentShaderSource = R"(
-#version 300 es
+static const char* fragmentShaderSource = R"(#version 300 es
 precision mediump float;
 
 out vec4 fragColor;
@@ -174,20 +215,31 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_nativeInit(JNIEnv* env, jobject thiz) {
     LOGI("Initializing Renderer3");
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    
+    // 检查 OpenGL 上下文
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        LOGE("OpenGL error before shader creation: 0x%x", err);
+    }
+    
     // 编译着色器程序
-    gRenderer.program = createProgram(vertexShaderSource, fragmentShaderSource);
     gRenderer.particle_count = 1000;
+    gRenderer.program = createProgram(vertexShaderSource, fragmentShaderSource);
+    
     if (gRenderer.program == 0) {
-        LOGE("Failed to create shader program");
+        LOGE("Failed to create shader program - check shader compilation errors above");
+        gRenderer.initialized = false;
         return JNI_FALSE;
     }
+    
     // 开启点精灵（渲染粒子为点）
     glEnable(GL_PROGRAM_POINT_SIZE);
     gRenderer.initialized = true;
+    LOGI("Renderer3 initialized successfully, program=%d", gRenderer.program);
 
     //初始化统一变量ubo
     g_Camera_Uniforms.ubo = createUniformBuffer(gRenderer.program, "CameraUniforms", 0);
-    updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.aspectRatio, 0, sizeof(g_Camera_Uniforms.aspectRatio));
+//    updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.aspectRatio, 0, sizeof(g_Camera_Uniforms.aspectRatio));
 
 
     g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
@@ -242,8 +294,9 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
         return;
     }
     
-    if (gRenderer.mesh.vao == 0 || gRenderer.g_tfb == 0) {
-        LOGE("VAO or TFB not initialized: vao=%d, tfb=%d", gRenderer.mesh.vao, gRenderer.g_tfb);
+    if (gRenderer.mesh.vao == 0 || gRenderer.g_tfb[0] == 0 || gRenderer.g_tfb[1] == 0) {
+        LOGE("VAO or TFB not initialized: vao=%d, tfb[0]=%d, tfb[1]=%d", 
+             gRenderer.mesh.vao, gRenderer.g_tfb[0], gRenderer.g_tfb[1]);
         return;
     }
     
@@ -261,23 +314,46 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
     glUseProgram(gRenderer.program);
 
     //设置统一变量
-    //当前时间
+    //当前时间（使用毫秒精度）
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    float currentTime = (float)(tv.tv_sec + tv.tv_usec / 1e6);
+    float currentTime = (float)tv.tv_sec + (float)tv.tv_usec / 1000000.0f;
     float deltaTime;
+    
     if (last_time == 0.0f){
-        deltaTime = 0.0f;
+        // 第一帧使用一个小的固定值，确保粒子开始移动
+        deltaTime = 0.016f;  // 约 60 FPS 的帧时间
+        last_time = currentTime;
+//        LOGI("First frame: deltaTime=%.6f, currentTime=%.6f", deltaTime, currentTime);
     } else {
         deltaTime = currentTime - last_time;
+        // 限制 deltaTime 在合理范围内（避免时间跳跃或负值）
+        if (deltaTime <= 0.0f || deltaTime > 0.1f) {
+//            LOGI("DeltaTime out of range: %.6f, clamping to 0.016f", deltaTime);
+            deltaTime = 0.016f;  // 如果时间异常，使用固定值
+        }
+        last_time = currentTime;
     }
-    last_time = currentTime;
-    g_Particle_Uniforms.deltaTime = deltaTime;
-    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
     
-    if (frameCount == 1) {
-        LOGI("First frame: deltaTime=%.3f, particle_count=%d", deltaTime, gRenderer.particle_count);
+    // 确保 deltaTime 不为 0
+    if (deltaTime <= 0.0f) {
+//        LOGE("ERROR: deltaTime is zero or negative: %.6f", deltaTime);
+        deltaTime = 0.016f;  // 强制设置为一个非零值
     }
+    
+    g_Particle_Uniforms.deltaTime = deltaTime;
+    
+    // 确保 UBO 已绑定
+    if (g_Particle_Uniforms.ubo.ubo == 0) {
+        LOGE("Particle UBO is not initialized!");
+    } else {
+        updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
+    }
+    
+//    if (frameCount <= 10 || frameCount % 60 == 0) {
+//        LOGI("Frame %d: deltaTime=%.6f, currentTime=%.6f, last_time=%.6f, particle_count=%d, currentBuffer=%d",
+//             frameCount, deltaTime, currentTime, last_time, gRenderer.particle_count, gRenderer.currentBuffer);
+//    }
 
 
     // 绑定纹理
@@ -296,14 +372,16 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
         glBindVertexArray(gRenderer.mesh.vao);
         if (gRenderer.mesh.indexCount > 0) {
             glDrawElements(GL_TRIANGLES, gRenderer.mesh.indexCount, GL_UNSIGNED_INT, 0);
-        } else if (gRenderer.g_tfb != 0){
+        } else if (gRenderer.g_tfb[0] != 0 && gRenderer.g_tfb[1] != 0){
             //两次 glDrawArrays 看似重复，实则目的完全不同：
             //第一次是 "更新粒子数据"（只跑顶点着色器，不渲染），
             //第二次是 "渲染粒子"（跑完整管线，显示到屏幕）。
             if (frameCount == 1) {
-                LOGI("Drawing particles for first time");
+                LOGI("Drawing particles for first time, currentBuffer=%d", gRenderer.currentBuffer);
             }
+            // 更新粒子（使用 Transform Feedback）
             updateParticlesWithTFB();
+            // 渲染更新后的粒子
             renderParticles();
             
             // 检查 OpenGL 错误
@@ -324,6 +402,16 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeCleanup(JNIEnv *env, jobject th
     releaseMesh(&gRenderer.mesh);
     releaseTexture(gRenderer.textureID);
 
+    // 释放双缓冲 TFB
+    if (gRenderer.g_tfb[0] != 0) {
+        glDeleteBuffers(1, &gRenderer.g_tfb[0]);
+        gRenderer.g_tfb[0] = 0;
+    }
+    if (gRenderer.g_tfb[1] != 0) {
+        glDeleteBuffers(1, &gRenderer.g_tfb[1]);
+        gRenderer.g_tfb[1] = 0;
+    }
+
     if (gRenderer.program != 0) {
         glDeleteProgram(gRenderer.program);
         gRenderer.program = 0;
@@ -337,22 +425,29 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeCleanup(JNIEnv *env, jobject th
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject thiz) {
-    LOGI("Initializing TFB buffer with %d particles", gRenderer.particle_count);
+    if (gRenderer.program == 0) {
+        LOGE("Cannot initialize TFB buffer: program is not created");
+        return;
+    }
     
-    //create
-    glGenBuffers(1, &gRenderer.g_tfb);
-    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, gRenderer.g_tfb);
-
+    LOGI("Initializing TFB buffers (double buffered) with %d particles", gRenderer.particle_count);
+    
+    // 创建双缓冲
+    glGenBuffers(2, gRenderer.g_tfb);
+    gRenderer.currentBuffer = 0;  // 初始从缓冲区0读取
+    
     //分配大小
     int buffer_size = gRenderer.particle_count * sizeof(Particle);
 
     // 创建并初始化粒子数据
     Particle* particles = new Particle[gRenderer.particle_count];
     for (int i = 0; i < gRenderer.particle_count; i++) {
-        // 初始位置设为喷出点（或任意位置，因为第一帧会重置）
-        particles[i].position[0] = 0.0f;
-        particles[i].position[1] = 0.0f;
-        particles[i].position[2] = 0.0f;
+        // 给每个粒子一个唯一的初始位置（作为随机种子）
+        // 使用索引来生成不同的初始值
+        float seed = (float)i;
+        particles[i].position[0] = (seed * 0.01f) - 0.5f;  // 稍微分散，避免完全重叠
+        particles[i].position[1] = -0.8f;  // 喷口位置
+        particles[i].position[2] = (seed * 0.01f) - 0.5f;
         
         // 初始直径（会在重置时随机）
         particles[i].diameter = 1.0f;
@@ -367,7 +462,11 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject th
         particles[i].lifeTime = -((float)i / (float)gRenderer.particle_count) * 3.0f;
     }
 
-    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, buffer_size, particles, GL_DYNAMIC_COPY);
+    // 初始化两个缓冲区（内容相同）
+    for (int i = 0; i < 2; i++) {
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, gRenderer.g_tfb[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, buffer_size, particles, GL_DYNAMIC_COPY);
+    }
     delete[] particles;  // 释放临时数组
     
     //指定TFB要捕获的变量
@@ -381,11 +480,22 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject th
     glGetProgramiv(gRenderer.program, GL_LINK_STATUS, &status);
     if (status != GL_TRUE) {
         //抛出错误
-        GLchar info[512];
-        glGetProgramInfoLog(gRenderer.program, 512, nullptr, info);
-        LOGE("Program link failed after TFB setup: %s", info);
+        GLint infoLen = 0;
+        glGetProgramiv(gRenderer.program, GL_INFO_LOG_LENGTH, &infoLen);
+        if (infoLen > 0) {
+            char* infoLog = new char[infoLen];
+            glGetProgramInfoLog(gRenderer.program, infoLen, nullptr, infoLog);
+            LOGE("Program link failed after TFB setup: %s", infoLog);
+            delete[] infoLog;
+        } else {
+            LOGE("Program link failed after TFB setup (no error log)");
+        }
+        // 解绑并返回，不继续初始化
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
+        gRenderer.initialized = false;
+        return;
     } else {
-        LOGI("TFB buffer initialized successfully");
+        LOGI("TFB buffer initialized successfully, program relinked");
     }
     //解绑
     glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
@@ -394,12 +504,22 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initTFBBuffer(JNIEnv *env, jobject th
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initVAO(JNIEnv *env, jobject thiz) {
+    if (gRenderer.program == 0) {
+        LOGE("Cannot initialize VAO: program is not created");
+        return;
+    }
+    if (gRenderer.g_tfb[0] == 0 || gRenderer.g_tfb[1] == 0) {
+        LOGE("Cannot initialize VAO: TFB buffers are not created");
+        return;
+    }
+    
     LOGI("Initializing VAO");
     
     glGenVertexArrays(1, &gRenderer.mesh.vao);
     glBindVertexArray(gRenderer.mesh.vao);
     //绑定TFB缓冲区作为顶点缓冲区（因为粒子数据存在这里）
-    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb);
+    // 初始绑定到缓冲区0
+    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[0]);
 
     //绑定顶点属性（对应顶点着色器的in变量）
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
@@ -419,6 +539,11 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initVAO(JNIEnv *env, jobject thiz) {
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_ndklearn2_OpenGLRenderer3_initUBO(JNIEnv *env, jobject thiz) {
+    if (gRenderer.program == 0) {
+        LOGE("Cannot initialize UBO: program is not created");
+        return;
+    }
+    
     LOGI("Initializing UBO (re-bind after program relink)");
     
     // 重新链接程序后，需要重新创建和绑定UBO
@@ -433,7 +558,11 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initUBO(JNIEnv *env, jobject thiz) {
     // 重新创建 Camera UBO
     g_Camera_Uniforms.ubo = createUniformBuffer(gRenderer.program, "CameraUniforms", 0);
     updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.aspectRatio, 0, sizeof(g_Camera_Uniforms.aspectRatio));
-    
+    g_Camera_Uniforms.cameraPos[0] = 0.0f;
+    g_Camera_Uniforms.cameraPos[1] = 0.0f;
+    g_Camera_Uniforms.cameraPos[2] = 0.0f;
+    updateUniformBuffer(&g_Camera_Uniforms.ubo, &g_Camera_Uniforms.cameraPos, 16, sizeof(g_Camera_Uniforms.cameraPos));
+
     // 重新创建 Particle UBO（确保使用相同的初始值）
     g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));

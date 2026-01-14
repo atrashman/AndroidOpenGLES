@@ -14,9 +14,12 @@
 
 // 编译着色器
 GLuint compileShader(GLenum type, const char* source) {
+    const char* shaderType = (type == GL_VERTEX_SHADER) ? "vertex" : "fragment";
+    LOGI("Compiling %s shader...", shaderType);
+    
     GLuint shader = glCreateShader(type);
     if (shader == 0) {
-        LOGE("Failed to create shader");
+        LOGE("Failed to create %s shader", shaderType);
         return 0;
     }
 
@@ -31,32 +34,39 @@ GLuint compileShader(GLenum type, const char* source) {
         if (infoLen > 0) {
             char* infoLog = new char[infoLen];
             glGetShaderInfoLog(shader, infoLen, nullptr, infoLog);
-            LOGE("Shader compilation error: %s", infoLog);
+            LOGE("%s shader compilation error: %s", shaderType, infoLog);
             delete[] infoLog;
+        } else {
+            LOGE("%s shader compilation failed (no error log available)", shaderType);
         }
         glDeleteShader(shader);
         return 0;
     }
 
+    LOGI("%s shader compiled successfully", shaderType);
     return shader;
 }
 
 // 创建着色器程序
 GLuint createProgram(const char* vertexShaderSource, const char* fragmentShaderSource) {
+    LOGI("Creating shader program...");
+    
     GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
     if (vertexShader == 0) {
+        LOGE("Vertex shader compilation failed, aborting program creation");
         return 0;
     }
 
     GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
     if (fragmentShader == 0) {
+        LOGE("Fragment shader compilation failed, aborting program creation");
         glDeleteShader(vertexShader);
         return 0;
     }
 
     GLuint program = glCreateProgram();
     if (program == 0) {
-        LOGE("Failed to create program");
+        LOGE("Failed to create program object");
         glDeleteShader(vertexShader);
         glDeleteShader(fragmentShader);
         return 0;
@@ -64,6 +74,7 @@ GLuint createProgram(const char* vertexShaderSource, const char* fragmentShaderS
 
     glAttachShader(program, vertexShader);
     glAttachShader(program, fragmentShader);
+    LOGI("Linking shader program...");
     glLinkProgram(program);
 
     GLint linked = 0;
@@ -76,6 +87,8 @@ GLuint createProgram(const char* vertexShaderSource, const char* fragmentShaderS
             glGetProgramInfoLog(program, infoLen, nullptr, infoLog);
             LOGE("Program linking error: %s", infoLog);
             delete[] infoLog;
+        } else {
+            LOGE("Program linking failed (no error log available)");
         }
         glDeleteProgram(program);
         glDeleteShader(vertexShader);
@@ -86,6 +99,7 @@ GLuint createProgram(const char* vertexShaderSource, const char* fragmentShaderS
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
+    LOGI("Shader program created and linked successfully, program ID=%d", program);
     return program;
 }
 
