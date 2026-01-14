@@ -41,6 +41,7 @@ static struct {
 static const int BINDING_POINT_TFB =0;
 static const int BINDING_POINT_VAO =1;
 void updateParticlesWithTFB();
+void renderParticles();
 
 const GLchar* g_TransformFeedbackVaryings[] = {
         "vPosition",
@@ -49,66 +50,6 @@ const GLchar* g_TransformFeedbackVaryings[] = {
         "vLifetime"
 };
 
-void updateParticlesWithTFB() {
-    //禁用光栅化（只更新粒子，不渲染，节省性能）
-    glEnable(GL_RASTERIZER_DISCARD);
-
-    // 双缓冲 ping-pong：从 currentBuffer 读取，写入到另一个缓冲区
-    int readBuffer = gRenderer.currentBuffer;
-    int writeBuffer = 1 - gRenderer.currentBuffer;
-    
-    // 绑定读取缓冲区到 VAO（作为输入）
-    // 注意：VAO 必须已经绑定（在 nativeRender 中）
-    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[readBuffer]);
-    // 更新顶点属性指针指向读取缓冲区（这些设置会保存到当前绑定的 VAO）
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
-    glEnableVertexAttribArray(3);
-    
-    // 绑定写入缓冲区到 Transform Feedback（作为输出）
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, BINDING_POINT_TFB, gRenderer.g_tfb[writeBuffer]);
-
-    //开启TFB捕获模式（图元类型为点）
-    glBeginTransformFeedback(GL_POINTS);
-
-    //执行绘制（从 readBuffer 读取，写入到 writeBuffer）
-    glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
-
-    //关闭TFB模式
-    glEndTransformFeedback();
-    
-    // 等待 Transform Feedback 完成（确保数据写入完成）
-    glFlush();
-    
-    // 交换缓冲区：下次从 writeBuffer 读取
-    gRenderer.currentBuffer = writeBuffer;
-    
-    //启用光栅化（后续渲染需要）
-    glDisable(GL_RASTERIZER_DISCARD);
-}
-void renderParticles() {
-    // 绑定当前缓冲区（已更新的数据）到 VAO 用于渲染
-    // 注意：VAO 已经绑定（在 nativeRender 中），只需要更新 ARRAY_BUFFER 绑定
-    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[gRenderer.currentBuffer]);
-    // 重新设置顶点属性指针（因为缓冲区改变了）
-    // VAO 已经绑定，所以这些设置会更新 VAO 的状态
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
-    glEnableVertexAttribArray(3);
-    
-    // 绘制更新后的粒子（使用当前缓冲区中的数据）
-    glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
-}
 
 // 顶点着色器（简化版，可根据需要修改）
 static const char* vertexShaderSource = R"(#version 300 es
@@ -129,15 +70,22 @@ layout(std140) uniform ParticleUniforms {
         float uMaxLifeTime;  // 最大生命周期
     };
 
-// 随机函数（GPU生成随机数，基于粒子位置）
+// 改进的哈希函数：打破线性相关性
+highp float hash(highp float n) {
+    return fract(sin(n * 127.1) * 43758.5453123);
+}
+
+// 2D 哈希函数：确保不同输入产生独立的随机数
+highp float hash2D(vec2 p) {
+    // 使用多个质数混淆
+    p = fract(p * vec2(443.8975, 397.2973));
+    p += dot(p.yx, p.xy + vec2(21.5351, 14.3137));
+    return fract(p.x * p.y * 95.4307);
+}
+
+// 随机函数（GPU生成随机数）
 highp float random(vec2 co) {
-    highp float a = 12.9898;
-    highp float b = 78.233;
-    highp float c = 43758.5453;
-    highp float dt= dot(co.xy ,vec2(a,b));
-    highp float sn= mod(dt,3.1415926);
-    //返回sin(sn)*c的小数部分，即0-1之间的随机数
-    return fract(sin(sn) * c);
+    return hash2D(co);
 }
 
 // 输出：更新后的粒子属性（供TFB捕获）
@@ -159,17 +107,24 @@ void main() {
     if (currentLife <= 0.0f) {
         //生命周期结束，重置粒子
         currentPos = uSpoutPos;
-        // 使用粒子 ID 来生成不同的随机值，确保每个粒子有不同的随机值
-        vec2 seedVec = vec2(particleID * 0.1, particleID * 0.1618);  // 使用粒子 ID 作为种子
-        currentDiameter = random(seedVec) * 0.5f + 0.5f;  // 直径 0.5-1.0
-        // 给粒子一个向上的初始速度，加上一些随机性
-        vec2 randXY = vec2(random(seedVec), random(seedVec.yx));
+        
+        // 为每个属性使用完全独立的种子，确保没有重叠
+        // 使用质数偏移确保每个粒子每个属性都有独特的随机数
+        float seed1 = hash(particleID * 0.1234);           // 直径种子
+        float seed2 = hash(particleID * 0.5678 + 100.0);   // X速度种子
+        float seed3 = hash(particleID * 0.9012 + 200.0);   // Y速度种子
+        float seed4 = hash(particleID * 0.3456 + 300.0);   // Z速度种子
+        float seed5 = hash(particleID * 0.7890 + 400.0);   // 生命周期种子
+        
+        currentDiameter = seed1 * 0.5f + 0.5f;  // 直径 0.5-1.0
+        
+        // 给粒子一个向上的初始速度，每个方向完全独立
         currentVel = vec3(
-            (randXY.x - 0.5f) * 0.3f,  // X方向随机速度，减小
-            random(seedVec) * 0.8f + 0.5f,  // Y方向向上速度 0.5-1.3
-            (randXY.y - 0.5f) * 0.3f   // Z方向随机速度，减小
+            (seed2 - 0.5f) * 0.3f,      // X方向随机速度
+            seed3 * 0.8f + 0.5f,        // Y方向向上速度 0.5-1.3
+            (seed4 - 0.5f) * 0.3f       // Z方向随机速度
         );
-        currentLife = random(seedVec) * 2.0f + 3.0f;  // 生命周期 3-5秒
+        currentLife = seed5 * 2.0f + 3.0f;  // 生命周期 3-5秒
     } else {
         // 应用重力（抛物线运动）
         currentVel = currentVel + uGravity * uDeltaTime;
@@ -223,7 +178,7 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeInit(JNIEnv* env, jobject thiz)
     }
     
     // 编译着色器程序
-    gRenderer.particle_count = 1000;
+    gRenderer.particle_count = 200;
     gRenderer.program = createProgram(vertexShaderSource, fragmentShaderSource);
     
     if (gRenderer.program == 0) {
@@ -573,4 +528,64 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initUBO(JNIEnv *env, jobject thiz) {
     LOGI("UBO initialized successfully - spoutPos=(%.2f,%.2f,%.2f), gravity=(%.2f,%.2f,%.2f)", 
          g_Particle_Uniforms.spoutPos[0], g_Particle_Uniforms.spoutPos[1], g_Particle_Uniforms.spoutPos[2],
          g_Particle_Uniforms.gravity[0], g_Particle_Uniforms.gravity[1], g_Particle_Uniforms.gravity[2]);
+}
+void updateParticlesWithTFB() {
+    //禁用光栅化（只更新粒子，不渲染，节省性能）
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    // 双缓冲 ping-pong：从 currentBuffer 读取，写入到另一个缓冲区
+    int readBuffer = gRenderer.currentBuffer;
+    int writeBuffer = 1 - gRenderer.currentBuffer;
+
+    // 绑定读取缓冲区到 VAO（作为输入）
+    // 注意：VAO 必须已经绑定（在 nativeRender 中）
+    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[readBuffer]);
+    // 更新顶点属性指针指向读取缓冲区（这些设置会保存到当前绑定的 VAO）
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
+    glEnableVertexAttribArray(3);
+
+    // 绑定写入缓冲区到 Transform Feedback（作为输出）
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, BINDING_POINT_TFB, gRenderer.g_tfb[writeBuffer]);
+
+    //开启TFB捕获模式（图元类型为点）
+    glBeginTransformFeedback(GL_POINTS);
+
+    //执行绘制（从 readBuffer 读取，写入到 writeBuffer）
+    glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
+
+    //关闭TFB模式
+    glEndTransformFeedback();
+
+    // 等待 Transform Feedback 完成（确保数据写入完成）
+    glFlush();
+
+    // 交换缓冲区：下次从 writeBuffer 读取
+    gRenderer.currentBuffer = writeBuffer;
+
+    //启用光栅化（后续渲染需要）
+    glDisable(GL_RASTERIZER_DISCARD);
+}
+void renderParticles() {
+    // 绑定当前缓冲区（已更新的数据）到 VAO 用于渲染
+    // 注意：VAO 已经绑定（在 nativeRender 中），只需要更新 ARRAY_BUFFER 绑定
+    glBindBuffer(GL_ARRAY_BUFFER, gRenderer.g_tfb[gRenderer.currentBuffer]);
+    // 重新设置顶点属性指针（因为缓冲区改变了）
+    // VAO 已经绑定，所以这些设置会更新 VAO 的状态
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)offsetof(Particle, position));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, diameter)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, velocity)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(Particle), (void*)(offsetof(Particle, lifeTime)));
+    glEnableVertexAttribArray(3);
+
+    // 绘制更新后的粒子（使用当前缓冲区中的数据）
+    glDrawArrays(GL_POINTS, 0, gRenderer.particle_count);
 }
