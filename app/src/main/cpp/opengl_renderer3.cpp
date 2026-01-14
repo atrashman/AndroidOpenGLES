@@ -36,6 +36,7 @@ static struct {
     float gravity[3];
     float deltaTime;
     float maxLifeTime;
+    float currentTime;  // 累积时间
 } g_Particle_Uniforms;
 
 static const int BINDING_POINT_TFB =0;
@@ -64,10 +65,11 @@ layout(std140) uniform CameraUniforms {
         vec3 uCameraPos;   // 相机位置
     };
 layout(std140) uniform ParticleUniforms {
-        float uDeltaTime; //客观时间
+        float uDeltaTime; //帧时间增量
         vec3 uSpoutPos;   // 喷口位置
         vec3 uGravity;  // 重力加速度向量 (0, -9.8, 0) 或类似值
         float uMaxLifeTime;  // 最大生命周期
+        float uCurrentTime;  // 累积时间（用于随机扰动）
     };
 
 // 改进的哈希函数：打破线性相关性
@@ -108,13 +110,22 @@ void main() {
         //生命周期结束，重置粒子
         currentPos = uSpoutPos;
         
-        // 为每个属性使用完全独立的种子，确保没有重叠
-        // 使用质数偏移确保每个粒子每个属性都有独特的随机数
-        float seed1 = hash(particleID * 0.1234);           // 直径种子
-        float seed2 = hash(particleID * 0.5678 + 100.0);   // X速度种子
-        float seed3 = hash(particleID * 0.9012 + 200.0);   // Y速度种子
-        float seed4 = hash(particleID * 0.3456 + 300.0);   // Z速度种子
-        float seed5 = hash(particleID * 0.7890 + 400.0);   // 生命周期种子
+        // 使用模运算将累积时间限制在 0-100 范围内，避免精度问题
+        // 乘以不同的质数让每个属性的扰动独立
+        float timeMod = mod(uCurrentTime, 100.0);
+        float timePert1 = mod(timeMod * 17.3, 10.0);   // 0-10 范围
+        float timePert2 = mod(timeMod * 23.7, 10.0);
+        float timePert3 = mod(timeMod * 31.1, 10.0);
+        float timePert4 = mod(timeMod * 41.9, 10.0);
+        float timePert5 = mod(timeMod * 53.3, 10.0);
+        
+        // 为每个属性使用完全独立的种子
+        // particleID 为主（0-200），时间扰动为辅（0-10），影响比例约 5%
+        float seed1 = hash(particleID * 0.1234 + timePert1 * 0.01);           // 直径种子
+        float seed2 = hash(particleID * 0.5678 + 100.0 + timePert2 * 0.01);   // X速度种子
+        float seed3 = hash(particleID * 0.9012 + 200.0 + timePert3 * 0.01);   // Y速度种子
+        float seed4 = hash(particleID * 0.3456 + 300.0 + timePert4 * 0.01);   // Z速度种子
+        float seed5 = hash(particleID * 0.7890 + 400.0 + timePert5 * 0.01);   // 生命周期种子
         
         currentDiameter = seed1 * 0.5f + 0.5f;  // 直径 0.5-1.0
         
@@ -199,6 +210,7 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeInit(JNIEnv* env, jobject thiz)
 
     g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
     g_Particle_Uniforms.deltaTime = 0.0f;
+    g_Particle_Uniforms.currentTime = 0.0f;
     float spoutPosTemp[] = {0.0f, -0.8f, 0.0f};  // 屏幕下方
     float gravityTemp[] = {0.0f, -0.5f, 0.0f};   // 降低重力，粒子飞得更高更慢
     memcpy(g_Particle_Uniforms.spoutPos, spoutPosTemp, sizeof(spoutPosTemp));
@@ -208,6 +220,7 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeInit(JNIEnv* env, jobject thiz)
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.spoutPos, 16, sizeof(g_Particle_Uniforms.spoutPos));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.gravity, 32, sizeof(g_Particle_Uniforms.gravity));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.maxLifeTime, 44, sizeof(g_Particle_Uniforms.maxLifeTime));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.currentTime, 48, sizeof(g_Particle_Uniforms.currentTime));
     return JNI_TRUE;
 }
 
@@ -297,12 +310,15 @@ Java_com_example_ndklearn2_OpenGLRenderer3_nativeRender(JNIEnv *env, jobject thi
     }
     
     g_Particle_Uniforms.deltaTime = deltaTime;
+    g_Particle_Uniforms.currentTime = currentTime;  // 更新累积时间
     
     // 确保 UBO 已绑定
     if (g_Particle_Uniforms.ubo.ubo == 0) {
         LOGE("Particle UBO is not initialized!");
     } else {
         updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
+        // 注意：UBO 中 uCurrentTime 在 offset 48 之后（uMaxLifeTime 在 44-47）
+        updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.currentTime, 48, sizeof(g_Particle_Uniforms.currentTime));
     }
     
 //    if (frameCount <= 10 || frameCount % 60 == 0) {
@@ -520,10 +536,12 @@ Java_com_example_ndklearn2_OpenGLRenderer3_initUBO(JNIEnv *env, jobject thiz) {
 
     // 重新创建 Particle UBO（确保使用相同的初始值）
     g_Particle_Uniforms.ubo = createUniformBuffer(gRenderer.program, "ParticleUniforms", 1);
+    g_Particle_Uniforms.currentTime = 0.0f;  // 初始化累积时间
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.deltaTime, 0, sizeof(g_Particle_Uniforms.deltaTime));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.spoutPos, 16, sizeof(g_Particle_Uniforms.spoutPos));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.gravity, 32, sizeof(g_Particle_Uniforms.gravity));
     updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.maxLifeTime, 44, sizeof(g_Particle_Uniforms.maxLifeTime));
+    updateUniformBuffer(&g_Particle_Uniforms.ubo, &g_Particle_Uniforms.currentTime, 48, sizeof(g_Particle_Uniforms.currentTime));
     
     LOGI("UBO initialized successfully - spoutPos=(%.2f,%.2f,%.2f), gravity=(%.2f,%.2f,%.2f)", 
          g_Particle_Uniforms.spoutPos[0], g_Particle_Uniforms.spoutPos[1], g_Particle_Uniforms.spoutPos[2],
